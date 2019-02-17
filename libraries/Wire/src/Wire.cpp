@@ -94,21 +94,21 @@ void TwoWire::setTimeoutInMillis(uint8_t timeout)
 uint8_t TwoWire::requestFrom(uint8_t address, uint8_t quantity, uint32_t iaddress, uint8_t isize, uint8_t sendStop)
 {
   if (isize > 0) {
-  // send internal address; this mode allows sending a repeated start to access
-  // some devices' internal registers. This function is executed by the hardware
-  // TWI module on other processors (for example Due's TWI_IADR and TWI_MMR registers)
+    // send internal address; this mode allows sending a repeated start to access
+    // some devices' internal registers. This function is executed by the hardware
+    // TWI module on other processors (for example Due's TWI_IADR and TWI_MMR registers)
 
-  beginTransmission(address);
+    beginTransmission(address);
 
-  // the maximum size of internal address is 3 bytes
-  if (isize > 3){
-    isize = 3;
-  }
+    // the maximum size of internal address is 3 bytes
+    if (isize > 3){
+      isize = 3;
+    }
 
-  // write internal register address - most significant byte first
-  while (isize-- > 0)
-    write((uint8_t)(iaddress >> (isize*8)));
-  endTransmission(false);
+    // write internal register address - most significant byte first
+    while (isize-- > 0)
+      write((uint8_t)(iaddress >> (isize*8)));
+    endTransmission(false);
   }
 
   // clamp to buffer length
