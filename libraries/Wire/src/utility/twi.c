@@ -38,6 +38,33 @@
 #include "pins_arduino.h"
 #include "twi.h"
 
+#define BUSYWAIT_WITH_TIMEOUT_UNTIL(exit_condition, timedout_label) \
+  do { \
+    uint32_t startMillis = millis(); \
+    while (!(exit_condition)) { \
+      if ((twi_timeout_ms > 0) && (millis() - startMillis > twi_timeout_ms)) { \
+        goto timedout_label; \
+      } \
+    } \
+  } while (0)
+
+// Same as BUSYWAIT_WITH_TIMEOUT_UNTIL but intended to be used in code
+// executed in interrupt service routines where millis() cannot be used.
+// https://www.arduino.cc/reference/en/language/functions/external-interrupts/attachinterrupt/:
+// "millis() relies on interrupts to count, so it will never increment inside an ISR."
+// TODO: Document calculations behind the 25000 upper counter limit.
+// TODO: Make the upper counter limit reflect the twi_timeout_ms value.
+#define IRS_BUSYWAIT_WITH_TIMEOUT_UNTIL(exit_condition, timedout_label) \
+  do { \
+    uint32_t counter = 0; \
+    while (!(exit_condition)) { \
+      counter++; \
+      if ((twi_timeout_ms > 0) && (counter >= 25000)) { \
+        goto timedout_label; \
+      } \
+    } \
+  } while (0)
+
 static volatile uint8_t twi_state;
 static volatile uint8_t twi_slarw;
 static volatile uint8_t twi_sendStop;			// should the transaction end with a stop
@@ -155,17 +182,8 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
   }
 
   // wait until twi is ready, become master receiver
-  uint32_t startMillis = millis();
-  while(TWI_READY != twi_state){
-    if((twi_timeout_ms > 0) && (millis() - startMillis > twi_timeout_ms)) {
-      //timeout
-      twi_disable();
-      twi_init();
+  BUSYWAIT_WITH_TIMEOUT_UNTIL(twi_state == TWI_READY, waiting_timedout);
 
-      return 0;
-    }
-    continue;
-  }
   twi_state = TWI_MRX;
   twi_sendStop = sendStop;
   // reset error state (0xFF.. no error occured)
@@ -202,17 +220,7 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
     TWCR = _BV(TWEN) | _BV(TWIE) | _BV(TWEA) | _BV(TWINT) | _BV(TWSTA);
 
   // wait for read operation to complete
-  startMillis = millis();
-  while(TWI_MRX == twi_state){
-    if((twi_timeout_ms > 0) && (millis() - startMillis > twi_timeout_ms)) {
-      //timeout
-      twi_disable();
-      twi_init();
-
-      return 0;
-    }
-    continue;
-  }
+  BUSYWAIT_WITH_TIMEOUT_UNTIL(twi_state != TWI_MRX, waiting_timedout);
 
   if (twi_masterBufferIndex < length)
     length = twi_masterBufferIndex;
@@ -223,6 +231,11 @@ uint8_t twi_readFrom(uint8_t address, uint8_t* data, uint8_t length, uint8_t sen
   }
 	
   return length;
+
+waiting_timedout:
+  twi_disable();
+  twi_init();
+  return 0;
 }
 
 /* 
@@ -250,17 +263,8 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
   }
 
   // wait until twi is ready, become master transmitter
-  uint32_t startMillis = millis();
-  while(TWI_READY != twi_state){
-    if((twi_timeout_ms > 0) && (millis() - startMillis > twi_timeout_ms)) {
-      //timeout
-      twi_disable();
-      twi_init();
+  BUSYWAIT_WITH_TIMEOUT_UNTIL(twi_state == TWI_READY, waiting_timedout);
 
-      return 4;
-    }
-    continue;
-  }
   twi_state = TWI_MTX;
   twi_sendStop = sendStop;
   // reset error state (0xFF.. no error occured)
@@ -300,16 +304,8 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     TWCR = _BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE) | _BV(TWSTA);	// enable INTs
 
   // wait for write operation to complete
-  startMillis = millis();
-  while(wait && (TWI_MTX == twi_state)){
-    if((twi_timeout_ms > 0) && (millis() - startMillis > twi_timeout_ms)) {
-      //timeout
-      twi_disable();
-      twi_init();
-
-      return 4;
-    }
-    continue;
+  if (wait) {
+    BUSYWAIT_WITH_TIMEOUT_UNTIL(twi_state != TWI_MTX, waiting_timedout);
   }
   
   if (twi_error == 0xFF)
@@ -320,6 +316,11 @@ uint8_t twi_writeTo(uint8_t address, uint8_t* data, uint8_t length, uint8_t wait
     return 3;	// error: data send, nack received
   else
     return 4;	// other twi error
+
+waiting_timedout:
+  twi_disable();
+  twi_init();
+  return 4;
 }
 
 /* 
@@ -406,22 +407,14 @@ void twi_stop(void)
 
   // wait for stop condition to be exectued on bus
   // TWINT is not set after a stop condition!
-  uint32_t counter = 0;
-  while(TWCR & _BV(TWSTO)){
-    counter++;
-    if((twi_timeout_ms > 0) && (counter >= 25000)) {
-      // timeout
-      twi_disable();
-      twi_init();
-
-      return;
-    }
-
-    continue;
-  }
+  IRS_BUSYWAIT_WITH_TIMEOUT_UNTIL((TWCR & _BV(TWSTO)) == 0, waiting_timedout);
 
   // update twi state
   twi_state = TWI_READY;
+
+waiting_timedout:
+  twi_disable();
+  twi_init();
 }
 
 /* 
